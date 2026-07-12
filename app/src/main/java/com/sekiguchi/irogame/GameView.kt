@@ -17,13 +17,15 @@ import android.view.View
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
 
 class GameView(context: Context) : View(context) {
 
-    private enum class Phase { IDLE, QUESTION, CELEBRATE }
+    private enum class Screen { MAIN, HIDE }
+    private enum class Phase { IDLE, LINEUP, QUESTION, CELEBRATE }
     private enum class Mode { ANIMAL, COLOR, COUNT }
 
     // ---- 色データ（かめ：いろクイズ） ----
@@ -38,7 +40,6 @@ class GameView(context: Context) : View(context) {
         "みずいろ" to Color.parseColor("#4FC3F7")
     )
 
-    // ---- どうぶつデータ（らっこ：どうぶつクイズ） ----
     private val animalNames = listOf("いぬ", "ねこ", "うさぎ", "ぞう", "ぱんだ", "ぶた", "かえる", "ひよこ")
 
     private val charNames = listOf("らっこ", "かめ", "ぺんぎん")
@@ -50,6 +51,7 @@ class GameView(context: Context) : View(context) {
     )
 
     // ---- ゲーム状態 ----
+    private var screen = Screen.MAIN
     private var phase = Phase.IDLE
     private var mode = Mode.COLOR
     private var selChar = -1
@@ -63,6 +65,19 @@ class GameView(context: Context) : View(context) {
     private var shakeBtn = -1
     private var shakeT0 = 0L
     private var lastFrame = 0L
+
+    // ---- 整列アニメーション ----
+    private val lineStartX = FloatArray(3)
+    private val lineStartY = FloatArray(3)
+    private var lineT0 = 0L
+    private var pendingChar = -1
+    private val curX = FloatArray(3)
+    private val curY = FloatArray(3)
+
+    // ---- かくれんぼ ----
+    private var spotIdx = 0
+    private var hideFound = false
+    private var foundT0 = 0L
 
     // ---- 紙吹雪 ----
     private class P(
@@ -88,6 +103,9 @@ class GameView(context: Context) : View(context) {
     private var charR = 0f
     private val btnRects = Array(3) { RectF() }
     private val countRects = Array(10) { RectF() }
+    private var cornerBtnX = 0f
+    private var cornerBtnY = 0f
+    private var cornerBtnR = 0f
 
     private fun now() = SystemClock.uptimeMillis()
 
@@ -107,23 +125,24 @@ class GameView(context: Context) : View(context) {
         charX[2] = w * 0.80f
         charY = h * 0.40f
         charR = w * 0.115f
-        // 3択ボタン（どうぶつ・いろ）
         val bw = w * 0.78f
         val bh = h * 0.08f
-        val ys = floatArrayOf(0.615f, 0.725f, 0.835f)
+        val ys = floatArrayOf(0.615f, 0.72f, 0.825f)
         for (i in 0..2) {
             btnRects[i].set(w / 2 - bw / 2, h * ys[i], w / 2 + bw / 2, h * ys[i] + bh)
         }
-        // 数字ボタン 1〜10（5×2）
         val cbw = w * 0.164f
-        val cbh = h * 0.075f
+        val cbh = h * 0.072f
         for (i in 0..9) {
             val col = i % 5
             val row = i / 5
             val cx = w * (0.12f + 0.19f * col)
-            val ty = h * (0.63f + 0.125f * row)
+            val ty = h * (0.625f + 0.115f * row)
             countRects[i].set(cx - cbw / 2, ty, cx + cbw / 2, ty + cbh)
         }
+        cornerBtnX = w * 0.115f
+        cornerBtnY = h * 0.925f
+        cornerBtnR = w * 0.085f
     }
 
     // ============ タッチ ============
@@ -131,10 +150,60 @@ class GameView(context: Context) : View(context) {
         if (e.action != MotionEvent.ACTION_DOWN) return true
         val x = e.x
         val y = e.y
-        if (phase == Phase.CELEBRATE) return true
+
+        if (screen == Screen.HIDE) {
+            if (hitCorner(x, y)) {
+                screen = Screen.MAIN
+                phase = Phase.IDLE
+                selChar = -1
+                parts.clear()
+                tg()?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
+                return true
+            }
+            if (!hideFound) {
+                val p = peekPos(spotIdx)
+                if (abs(x - p[0]) < w * 0.12f && abs(y - p[1]) < w * 0.14f) {
+                    hideFound = true
+                    foundT0 = now()
+                    score++
+                    spawnConfetti(p[0], p[1])
+                    playHappy()
+                    uiHandler.postDelayed({
+                        hideFound = false
+                        var ns = Random.nextInt(5)
+                        while (ns == spotIdx) ns = Random.nextInt(5)
+                        spotIdx = ns
+                        parts.clear()
+                    }, 2800)
+                }
+            }
+            return true
+        }
+
+        // MAIN画面
+        if (phase == Phase.CELEBRATE || phase == Phase.LINEUP) return true
+        if (hitCorner(x, y)) {
+            screen = Screen.HIDE
+            hideFound = false
+            spotIdx = Random.nextInt(5)
+            parts.clear()
+            tg()?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
+            return true
+        }
         val ci = hitChar(x, y)
         if (ci >= 0) {
-            startQuestion(ci)
+            if (phase == Phase.IDLE) {
+                for (i in 0..2) {
+                    lineStartX[i] = curX[i]
+                    lineStartY[i] = curY[i]
+                }
+                pendingChar = ci
+                lineT0 = now()
+                phase = Phase.LINEUP
+                tg()?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
+            } else {
+                startQuestion(ci)
+            }
             return true
         }
         if (phase == Phase.QUESTION) {
@@ -162,11 +231,17 @@ class GameView(context: Context) : View(context) {
         return true
     }
 
+    private fun hitCorner(x: Float, y: Float): Boolean {
+        val dx = x - cornerBtnX
+        val dy = y - cornerBtnY
+        return dx * dx + dy * dy < cornerBtnR * 1.3f * cornerBtnR * 1.3f
+    }
+
     private fun hitChar(x: Float, y: Float): Int {
         for (i in 0..2) {
-            val dx = x - charX[i]
-            val dy = y - charY
-            if (dx * dx + dy * dy < charR * 1.5f * charR * 1.5f) return i
+            val dx = x - curX[i]
+            val dy = y - curY[i]
+            if (dx * dx + dy * dy < charR * 1.6f * charR * 1.6f) return i
         }
         return -1
     }
@@ -199,6 +274,14 @@ class GameView(context: Context) : View(context) {
         tg()?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
     }
 
+    private fun playHappy() {
+        val t = tg()
+        t?.startTone(ToneGenerator.TONE_DTMF_1, 130)
+        uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_5, 130) }, 160)
+        uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_9, 160) }, 320)
+        uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_D, 320) }, 500)
+    }
+
     private fun answer(i: Int) {
         val correct = when (mode) {
             Mode.COUNT -> i + 1 == countTarget
@@ -208,16 +291,14 @@ class GameView(context: Context) : View(context) {
             phase = Phase.CELEBRATE
             celebT0 = now()
             score++
-            spawnConfetti()
-            val t = tg()
-            t?.startTone(ToneGenerator.TONE_DTMF_1, 130)
-            uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_5, 130) }, 160)
-            uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_9, 160) }, 320)
-            uiHandler.postDelayed({ t?.startTone(ToneGenerator.TONE_DTMF_D, 320) }, 500)
+            spawnConfetti(w / 2, h * 0.40f)
+            playHappy()
             uiHandler.postDelayed({
-                phase = Phase.IDLE
-                selChar = -1
-                parts.clear()
+                if (screen == Screen.MAIN) {
+                    phase = Phase.IDLE
+                    selChar = -1
+                    parts.clear()
+                }
             }, 3000)
         } else {
             shakeBtn = i
@@ -226,7 +307,7 @@ class GameView(context: Context) : View(context) {
         }
     }
 
-    private fun spawnConfetti() {
+    private fun spawnConfetti(sx: Float, sy: Float) {
         parts.clear()
         val palette = colorList.map { it.second }
         repeat(110) {
@@ -234,7 +315,7 @@ class GameView(context: Context) : View(context) {
             val sp = w * 0.3f + Random.nextFloat() * w * 1.1f
             parts.add(
                 P(
-                    x = w / 2, y = h * 0.40f,
+                    x = sx, y = sy,
                     vx = cos(a) * sp, vy = sin(a) * sp - w * 0.55f,
                     rot = Random.nextFloat() * 360f,
                     vr = (Random.nextFloat() - 0.5f) * 720f,
@@ -245,43 +326,85 @@ class GameView(context: Context) : View(context) {
         }
     }
 
+    private fun easeOutBack(t: Float): Float {
+        val c1 = 1.70158f
+        val c3 = c1 + 1f
+        val x = t - 1f
+        return 1f + c3 * x * x * x + c1 * x * x
+    }
+
     // ============ 描画 ============
     override fun onDraw(cv: Canvas) {
         val t = now()
         val dt = if (lastFrame == 0L) 0f else min(0.05f, (t - lastFrame) / 1000f)
         lastFrame = t
 
-        cv.drawColor(Color.parseColor("#FFF8E1"))
-        paint.style = Paint.Style.FILL
-        paint.color = Color.parseColor("#DCEDC8")
-        cv.drawOval(-w * 0.2f, charY + charR * 1.0f, w * 1.2f, charY + charR * 2.6f, paint)
-
-        drawScore(cv)
-
-        for (i in 0..2) {
-            var yoff = sin(t / 400f + i * 2f) * charR * 0.05f
-            if (phase == Phase.CELEBRATE && i == selChar) {
-                yoff = -abs(sin((t - celebT0) / 170f)) * charR * 0.55f
-            }
-            if (selChar == i && phase != Phase.IDLE) {
-                paint.color = Color.parseColor("#66FFF176")
-                cv.drawCircle(charX[i], charY + yoff, charR * 1.7f, paint)
-            }
-            drawChar(cv, i, charX[i], charY + yoff, charR)
-            tp.textSize = w * 0.042f
-            tp.color = Color.parseColor("#6D4C41")
-            cv.drawText(charNames[i], charX[i], charY + charR * 1.55f, tp)
-            tp.textSize = w * 0.03f
-            tp.color = Color.parseColor("#A1887F")
-            cv.drawText(charModes[i], charX[i], charY + charR * 1.9f, tp)
+        if (screen == Screen.HIDE) {
+            drawHideScreen(cv, t, dt)
+            postInvalidateOnAnimation()
+            return
         }
 
-        if (phase != Phase.IDLE && selChar >= 0) drawBoard(cv, t)
+        drawBeach(cv, t)
+        drawScore(cv)
+        updatePositions(t)
+
+        val swimming = phase == Phase.IDLE || phase == Phase.LINEUP
+        for (i in 0..2) {
+            var yoff = 0f
+            var tilt = 0f
+            if (swimming) {
+                tilt = sin(t / 900f + i * 1.3f) * 8f
+            } else {
+                yoff = sin(t / 400f + i * 2f) * charR * 0.05f
+                if (phase == Phase.CELEBRATE && i == selChar) {
+                    yoff = -abs(sin((t - celebT0) / 170f)) * charR * 0.55f
+                }
+            }
+            if (selChar == i && (phase == Phase.QUESTION || phase == Phase.CELEBRATE)) {
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#66FFF176")
+                cv.drawCircle(curX[i], curY[i] + yoff, charR * 1.7f, paint)
+            }
+            cv.save()
+            cv.rotate(tilt, curX[i], curY[i] + yoff)
+            drawChar(cv, i, curX[i], curY[i] + yoff, charR)
+            cv.restore()
+        }
+
+        // 海のとうめいなみず（泳いでいるとき）
+        if (phase == Phase.IDLE) {
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#494FC3F7")
+            cv.drawRect(0f, h * 0.21f, w, h * 0.455f, paint)
+            // あわ
+            paint.color = Color.parseColor("#88FFFFFF")
+            for (k in 0..5) {
+                val bx = w * (0.08f + 0.17f * k)
+                val by = h * 0.44f - ((t * 0.028f + k * 251f) % (h * 0.20f))
+                cv.drawCircle(bx, by, w * (0.008f + 0.004f * (k % 3)), paint)
+            }
+        }
+
+        // なまえラベル
+        for (i in 0..2) {
+            tp.textSize = w * 0.04f
+            tp.color = if (swimming) Color.WHITE else Color.parseColor("#6D4C41")
+            cv.drawText(charNames[i], curX[i], curY[i] + charR * 1.65f, tp)
+            if (!swimming) {
+                tp.textSize = w * 0.03f
+                tp.color = Color.parseColor("#A1887F")
+                cv.drawText(charModes[i], curX[i], curY[i] + charR * 2.0f, tp)
+            }
+        }
+
+        if ((phase == Phase.QUESTION || phase == Phase.CELEBRATE) && selChar >= 0) drawBoard(cv, t)
 
         tp.textSize = w * 0.05f
         tp.color = Color.parseColor("#6D4C41")
         val msg = when (phase) {
             Phase.IDLE -> "すきな どうぶつを タッチしてね"
+            Phase.LINEUP -> ""
             Phase.QUESTION -> when (mode) {
                 Mode.ANIMAL -> "これは なんの どうぶつかな？"
                 Mode.COLOR -> "この いたは なにいろかな？"
@@ -294,9 +417,75 @@ class GameView(context: Context) : View(context) {
         if (phase == Phase.QUESTION) {
             if (mode == Mode.COUNT) drawCountButtons(cv, t) else drawChoiceButtons(cv, t)
         }
-        if (phase == Phase.CELEBRATE) drawCelebrate(cv, t, dt)
+        if (phase == Phase.IDLE || phase == Phase.QUESTION) drawRabbitButton(cv, t)
+        if (phase == Phase.CELEBRATE) drawCelebrate(cv, t, dt, "せいかい！", "すごーい！", w / 2, h * 0.44f)
 
         postInvalidateOnAnimation()
+    }
+
+    private fun updatePositions(t: Long) {
+        val baseX = floatArrayOf(w * 0.22f, w * 0.50f, w * 0.78f)
+        when (phase) {
+            Phase.IDLE -> {
+                for (i in 0..2) {
+                    curX[i] = baseX[i] + sin(t * 0.00035f + i * 2.1f) * w * 0.10f
+                    curY[i] = h * 0.295f + sin(t * 0.0007f + i * 1.7f) * h * 0.035f +
+                        max(0f, sin(t * 0.00018f + i * 2.9f)) * h * 0.05f
+                }
+            }
+            Phase.LINEUP -> {
+                val p = ((t - lineT0) / 550f).coerceIn(0f, 1f)
+                val e = p * p * (3f - 2f * p)
+                for (i in 0..2) {
+                    curX[i] = lineStartX[i] + (charX[i] - lineStartX[i]) * e
+                    curY[i] = lineStartY[i] + (charY - lineStartY[i]) * e
+                }
+                if (p >= 1f && pendingChar >= 0) {
+                    val pc = pendingChar
+                    pendingChar = -1
+                    startQuestion(pc)
+                }
+            }
+            else -> {
+                for (i in 0..2) {
+                    curX[i] = charX[i]
+                    curY[i] = charY
+                }
+            }
+        }
+    }
+
+    private fun drawBeach(cv: Canvas, t: Long) {
+        paint.style = Paint.Style.FILL
+        // そら
+        paint.color = Color.parseColor("#B3E5FC")
+        cv.drawRect(0f, 0f, w, h * 0.22f, paint)
+        // たいよう
+        paint.color = Color.parseColor("#FFF176")
+        cv.drawCircle(w * 0.87f, h * 0.075f, w * 0.055f, paint)
+        // くも
+        paint.color = Color.WHITE
+        val cx1 = w * (0.22f + 0.02f * sin(t / 4000f))
+        cv.drawOval(cx1 - w * 0.1f, h * 0.05f, cx1 + w * 0.1f, h * 0.085f, paint)
+        cv.drawOval(cx1 - w * 0.05f, h * 0.035f, cx1 + w * 0.06f, h * 0.07f, paint)
+        // うみ
+        paint.color = Color.parseColor("#4FC3F7")
+        cv.drawRect(0f, h * 0.16f, w, h * 0.47f, paint)
+        // なみ
+        paint.color = Color.parseColor("#81D4FA")
+        for (k in 0..4) {
+            val wx = w * 0.2f * k + (t * 0.01f) % (w * 0.2f)
+            cv.drawArc(wx - w * 0.1f, h * 0.165f, wx + w * 0.1f, h * 0.195f, 180f, 180f, false, paint)
+        }
+        // すなはま
+        paint.color = Color.parseColor("#FFE0B2")
+        cv.drawRect(0f, h * 0.465f, w, h, paint)
+        cv.drawOval(-w * 0.2f, h * 0.435f, w * 1.2f, h * 0.52f, paint)
+        // かいがら・ヒトデ
+        paint.color = Color.parseColor("#FFAB91")
+        cv.drawCircle(w * 0.12f, h * 0.55f, w * 0.014f, paint)
+        paint.color = Color.parseColor("#FFCC80")
+        cv.drawCircle(w * 0.88f, h * 0.57f, w * 0.014f, paint)
     }
 
     private fun drawScore(cv: Canvas) {
@@ -307,13 +496,6 @@ class GameView(context: Context) : View(context) {
         tp.color = Color.parseColor("#6D4C41")
         cv.drawText(" $score", w * 0.12f, h * 0.06f, tp)
         tp.textAlign = Paint.Align.CENTER
-    }
-
-    private fun easeOutBack(t: Float): Float {
-        val c1 = 1.70158f
-        val c3 = c1 + 1f
-        val x = t - 1f
-        return 1f + c3 * x * x * x + c1 * x * x
     }
 
     private fun drawBoard(cv: Canvas, t: Long) {
@@ -337,7 +519,6 @@ class GameView(context: Context) : View(context) {
         val by = startY + (endY - startY) * easeOutBack(p)
         val rot = sin(t / 500f) * 2f
 
-        // うで
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = charR * 0.22f
         paint.strokeCap = Paint.Cap.ROUND
@@ -438,10 +619,236 @@ class GameView(context: Context) : View(context) {
         paint.style = Paint.Style.FILL
     }
 
-    private fun drawCelebrate(cv: Canvas, t: Long, dt: Float) {
-        val el = t - celebT0
-        val cx = w / 2
-        val cy = h * 0.44f
+    // ---- かくれんぼボタン（目かくしうさぎ） ----
+    private fun drawRabbitButton(cv: Canvas, t: Long) {
+        val cx = cornerBtnX
+        val cy = cornerBtnY
+        val r = cornerBtnR
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#33000000")
+        cv.drawCircle(cx, cy + r * 0.08f, r, paint)
+        paint.color = Color.WHITE
+        cv.drawCircle(cx, cy, r, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = r * 0.08f
+        paint.color = Color.parseColor("#F48FB1")
+        cv.drawCircle(cx, cy, r, paint)
+        paint.style = Paint.Style.FILL
+        // みみ
+        paint.color = Color.WHITE
+        cv.drawOval(cx - r * 0.45f, cy - r * 0.95f, cx - r * 0.1f, cy - r * 0.15f, paint)
+        cv.drawOval(cx + r * 0.1f, cy - r * 0.95f, cx + r * 0.45f, cy - r * 0.15f, paint)
+        paint.color = Color.parseColor("#F8BBD0")
+        cv.drawOval(cx - r * 0.37f, cy - r * 0.82f, cx - r * 0.18f, cy - r * 0.28f, paint)
+        cv.drawOval(cx + r * 0.18f, cy - r * 0.82f, cx + r * 0.37f, cy - r * 0.28f, paint)
+        // かお
+        paint.color = Color.WHITE
+        cv.drawCircle(cx, cy + r * 0.12f, r * 0.55f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = r * 0.05f
+        paint.color = Color.parseColor("#BCAAA4")
+        cv.drawCircle(cx, cy + r * 0.12f, r * 0.55f, paint)
+        paint.style = Paint.Style.FILL
+        // くち
+        paint.color = Color.parseColor("#F06292")
+        cv.drawCircle(cx, cy + r * 0.35f, r * 0.06f, paint)
+        // 目をかくす手（ゆらゆら）
+        val wob = sin(t / 350f) * r * 0.03f
+        paint.color = Color.WHITE
+        cv.drawCircle(cx - r * 0.24f, cy + r * 0.02f + wob, r * 0.22f, paint)
+        cv.drawCircle(cx + r * 0.24f, cy + r * 0.02f - wob, r * 0.22f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = r * 0.05f
+        paint.color = Color.parseColor("#BCAAA4")
+        cv.drawCircle(cx - r * 0.24f, cy + r * 0.02f + wob, r * 0.22f, paint)
+        cv.drawCircle(cx + r * 0.24f, cy + r * 0.02f - wob, r * 0.22f, paint)
+        paint.style = Paint.Style.FILL
+        tp.textSize = w * 0.028f
+        tp.color = Color.parseColor("#6D4C41")
+        cv.drawText("かくれんぼ", cx, cy + r * 1.45f, tp)
+    }
+
+    // ---- もどるボタン（ぺんぎん） ----
+    private fun drawPenguinButton(cv: Canvas) {
+        val cx = cornerBtnX
+        val cy = cornerBtnY
+        val r = cornerBtnR
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#33000000")
+        cv.drawCircle(cx, cy + r * 0.08f, r, paint)
+        paint.color = Color.WHITE
+        cv.drawCircle(cx, cy, r, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = r * 0.08f
+        paint.color = Color.parseColor("#4FC3F7")
+        cv.drawCircle(cx, cy, r, paint)
+        paint.style = Paint.Style.FILL
+        drawPenguin(cv, cx, cy, r * 0.5f)
+        tp.textSize = w * 0.028f
+        tp.color = Color.parseColor("#6D4C41")
+        cv.drawText("もどる", cx, cy + r * 1.45f, tp)
+    }
+
+    // ============ かくれんぼ画面 ============
+    private fun peekPos(i: Int): FloatArray = when (i) {
+        0 -> floatArrayOf(w * 0.16f, h * 0.43f, 0f)   // しげみ1のうえ（みみ）
+        1 -> floatArrayOf(w * 0.60f, h * 0.40f, 0f)   // しげみ2のうえ（みみ）
+        2 -> floatArrayOf(w * 0.935f, h * 0.475f, 1f) // きのよこ（て）
+        3 -> floatArrayOf(w * 0.36f, h * 0.72f, 2f)   // ベンチのした（あし）
+        else -> floatArrayOf(w * 0.705f, h * 0.575f, 0f) // すべりだいのうえ（みみ）
+    }
+
+    private fun drawHideScreen(cv: Canvas, t: Long, dt: Float) {
+        paint.style = Paint.Style.FILL
+        // そら
+        paint.color = Color.parseColor("#B3E5FC")
+        cv.drawRect(0f, 0f, w, h * 0.32f, paint)
+        paint.color = Color.parseColor("#FFF176")
+        cv.drawCircle(w * 0.12f, h * 0.07f, w * 0.05f, paint)
+        // もり（おく）
+        for (k in 0..5) {
+            val tx = w * (0.02f + 0.19f * k)
+            paint.color = Color.parseColor("#5D4037")
+            cv.drawRect(tx - w * 0.015f, h * 0.24f, tx + w * 0.015f, h * 0.33f, paint)
+            paint.color = if (k % 2 == 0) Color.parseColor("#2E7D32") else Color.parseColor("#388E3C")
+            cv.drawCircle(tx, h * 0.21f, w * 0.10f, paint)
+        }
+        // くさはら
+        paint.color = Color.parseColor("#9CCC65")
+        cv.drawRect(0f, h * 0.31f, w, h * 0.58f, paint)
+        paint.color = Color.parseColor("#AED581")
+        cv.drawRect(0f, h * 0.56f, w, h, paint)
+
+        // まえのき（みぎ）
+        paint.color = Color.parseColor("#6D4C41")
+        cv.drawRect(w * 0.835f, h * 0.30f, w * 0.895f, h * 0.56f, paint)
+        paint.color = Color.parseColor("#43A047")
+        cv.drawCircle(w * 0.865f, h * 0.255f, w * 0.135f, paint)
+
+        // しげみ1（ひだり）
+        paint.color = Color.parseColor("#66BB6A")
+        cv.drawCircle(w * 0.09f, h * 0.475f, w * 0.085f, paint)
+        cv.drawCircle(w * 0.16f, h * 0.465f, w * 0.095f, paint)
+        cv.drawCircle(w * 0.235f, h * 0.478f, w * 0.08f, paint)
+        // しげみ2（まんなか）
+        paint.color = Color.parseColor("#81C784")
+        cv.drawCircle(w * 0.545f, h * 0.44f, w * 0.075f, paint)
+        cv.drawCircle(w * 0.615f, h * 0.435f, w * 0.085f, paint)
+        cv.drawCircle(w * 0.68f, h * 0.445f, w * 0.07f, paint)
+
+        // ベンチ
+        paint.color = Color.parseColor("#8D6E63")
+        cv.drawRect(w * 0.24f, h * 0.625f, w * 0.48f, h * 0.640f, paint) // せもたれ
+        cv.drawRect(w * 0.24f, h * 0.665f, w * 0.48f, h * 0.685f, paint) // ざせき
+        cv.drawRect(w * 0.26f, h * 0.685f, w * 0.29f, h * 0.735f, paint)
+        cv.drawRect(w * 0.43f, h * 0.685f, w * 0.46f, h * 0.735f, paint)
+
+        // すべりだい
+        paint.color = Color.parseColor("#90A4AE")
+        cv.drawRect(w * 0.665f, h * 0.585f, w * 0.745f, h * 0.605f, paint) // ステージ
+        cv.drawRect(w * 0.675f, h * 0.605f, w * 0.695f, h * 0.76f, paint) // はしご
+        cv.drawRect(w * 0.72f, h * 0.605f, w * 0.735f, h * 0.76f, paint)
+        paint.color = Color.parseColor("#EF5350")
+        val slide = Path()
+        slide.moveTo(w * 0.745f, h * 0.59f)
+        slide.lineTo(w * 0.90f, h * 0.76f)
+        slide.lineTo(w * 0.855f, h * 0.775f)
+        slide.lineTo(w * 0.735f, h * 0.615f)
+        slide.close()
+        cv.drawPath(slide, paint)
+
+        drawScore(cv)
+
+        // うさぎ（かくれている or みつかった）
+        val p = peekPos(spotIdx)
+        if (!hideFound) {
+            drawPeek(cv, p[0], p[1], p[2].toInt(), t)
+        } else {
+            val jump = -abs(sin((t - foundT0) / 170f)) * w * 0.06f
+            drawRabbitFull(cv, p[0], p[1] - w * 0.05f + jump, w * 0.07f)
+        }
+
+        tp.textSize = w * 0.05f
+        tp.color = Color.parseColor("#33691E")
+        if (!hideFound) cv.drawText("うさぎさんは どこかな？", w / 2, h * 0.10f, tp)
+
+        drawPenguinButton(cv)
+
+        if (hideFound) {
+            drawCelebrate(cv, t, dt, "みつけた！", "やったー！", w / 2, h * 0.40f)
+        }
+    }
+
+    private fun drawPeek(cv: Canvas, x: Float, y: Float, kind: Int, t: Long) {
+        val wig = sin(t / 320f) * 3f
+        cv.save()
+        cv.rotate(wig, x, y)
+        paint.style = Paint.Style.FILL
+        when (kind) {
+            0 -> { // みみだけ
+                paint.color = Color.WHITE
+                cv.drawOval(x - w * 0.075f, y - w * 0.19f, x - w * 0.015f, y + w * 0.015f, paint)
+                cv.drawOval(x + w * 0.015f, y - w * 0.19f, x + w * 0.075f, y + w * 0.015f, paint)
+                paint.color = Color.parseColor("#F8BBD0")
+                cv.drawOval(x - w * 0.06f, y - w * 0.16f, x - w * 0.03f, y - w * 0.02f, paint)
+                cv.drawOval(x + w * 0.03f, y - w * 0.16f, x + w * 0.06f, y - w * 0.02f, paint)
+            }
+            1 -> { // てだけ
+                paint.color = Color.WHITE
+                cv.drawCircle(x, y, w * 0.035f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = w * 0.006f
+                paint.color = Color.parseColor("#B0BEC5")
+                cv.drawCircle(x, y, w * 0.035f, paint)
+                cv.drawLine(x - w * 0.01f, y - w * 0.03f, x - w * 0.01f, y - w * 0.012f, paint)
+                cv.drawLine(x + w * 0.01f, y - w * 0.03f, x + w * 0.01f, y - w * 0.012f, paint)
+                paint.style = Paint.Style.FILL
+            }
+            2 -> { // あしだけ
+                paint.color = Color.WHITE
+                cv.drawOval(x - w * 0.085f, y - w * 0.02f, x - w * 0.005f, y + w * 0.025f, paint)
+                cv.drawOval(x + w * 0.005f, y - w * 0.02f, x + w * 0.085f, y + w * 0.025f, paint)
+                paint.color = Color.parseColor("#F8BBD0")
+                cv.drawCircle(x - w * 0.06f, y, w * 0.012f, paint)
+                cv.drawCircle(x + w * 0.03f, y, w * 0.012f, paint)
+            }
+        }
+        cv.restore()
+    }
+
+    private fun drawRabbitFull(cv: Canvas, cx: Float, cy: Float, r: Float) {
+        paint.style = Paint.Style.FILL
+        // みみ
+        paint.color = Color.WHITE
+        cv.drawOval(cx - r * 0.6f, cy - r * 1.9f, cx - r * 0.1f, cy - r * 0.4f, paint)
+        cv.drawOval(cx + r * 0.1f, cy - r * 1.9f, cx + r * 0.6f, cy - r * 0.4f, paint)
+        paint.color = Color.parseColor("#F8BBD0")
+        cv.drawOval(cx - r * 0.48f, cy - r * 1.7f, cx - r * 0.22f, cy - r * 0.6f, paint)
+        cv.drawOval(cx + r * 0.22f, cy - r * 1.7f, cx + r * 0.48f, cy - r * 0.6f, paint)
+        // からだ
+        paint.color = Color.WHITE
+        cv.drawOval(cx - r * 0.8f, cy + r * 0.4f, cx + r * 0.8f, cy + r * 2.0f, paint)
+        // あたま
+        cv.drawCircle(cx, cy, r, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = r * 0.05f
+        paint.color = Color.parseColor("#B0BEC5")
+        cv.drawCircle(cx, cy, r, paint)
+        cv.drawOval(cx - r * 0.8f, cy + r * 0.4f, cx + r * 0.8f, cy + r * 2.0f, paint)
+        paint.style = Paint.Style.FILL
+        // め・はな・ほっぺ
+        paint.color = Color.BLACK
+        cv.drawCircle(cx - r * 0.35f, cy - r * 0.1f, r * 0.1f, paint)
+        cv.drawCircle(cx + r * 0.35f, cy - r * 0.1f, r * 0.1f, paint)
+        paint.color = Color.parseColor("#F06292")
+        cv.drawCircle(cx, cy + r * 0.2f, r * 0.11f, paint)
+        paint.color = Color.parseColor("#F8BBD0")
+        cv.drawCircle(cx - r * 0.6f, cy + r * 0.25f, r * 0.14f, paint)
+        cv.drawCircle(cx + r * 0.6f, cy + r * 0.25f, r * 0.14f, paint)
+    }
+
+    private fun drawCelebrate(cv: Canvas, t: Long, dt: Float, mainText: String, subText: String, cx: Float, cy: Float) {
+        val el = t - celebFoundTime()
 
         cv.save()
         cv.rotate(el / 22f, cx, cy)
@@ -486,15 +893,18 @@ class GameView(context: Context) : View(context) {
         tp.style = Paint.Style.STROKE
         tp.strokeWidth = w * 0.02f
         tp.color = Color.WHITE
-        cv.drawText("せいかい！", cx, cy, tp)
+        cv.drawText(mainText, cx, cy, tp)
         tp.style = Paint.Style.FILL
         tp.color = Color.HSVToColor(floatArrayOf((el / 8f) % 360f, 0.85f, 0.95f))
-        cv.drawText("せいかい！", cx, cy, tp)
+        cv.drawText(mainText, cx, cy, tp)
         tp.textSize = w * 0.07f
         tp.color = Color.parseColor("#FF7043")
-        cv.drawText("すごーい！", cx, cy + w * 0.13f, tp)
+        cv.drawText(subText, cx, cy + w * 0.13f, tp)
         cv.restore()
     }
+
+    private fun celebFoundTime(): Long =
+        if (screen == Screen.HIDE) foundT0 else celebT0
 
     // ============ キャラクター ============
     private fun drawChar(cv: Canvas, i: Int, cx: Float, cy: Float, r: Float) {
@@ -506,6 +916,7 @@ class GameView(context: Context) : View(context) {
     }
 
     private fun drawOtter(cv: Canvas, cx: Float, cy: Float, r: Float) {
+        paint.style = Paint.Style.FILL
         paint.color = Color.parseColor("#8D6E63")
         cv.drawOval(cx - r * 0.85f, cy - r * 0.2f, cx + r * 0.85f, cy + r * 1.15f, paint)
         paint.color = Color.parseColor("#D7CCC8")
@@ -531,6 +942,7 @@ class GameView(context: Context) : View(context) {
     }
 
     private fun drawTurtle(cv: Canvas, cx: Float, cy: Float, r: Float) {
+        paint.style = Paint.Style.FILL
         paint.color = Color.parseColor("#9CCC65")
         cv.drawOval(cx - r * 0.85f, cy + r * 0.7f, cx - r * 0.35f, cy + r * 1.15f, paint)
         cv.drawOval(cx + r * 0.35f, cy + r * 0.7f, cx + r * 0.85f, cy + r * 1.15f, paint)
@@ -552,6 +964,7 @@ class GameView(context: Context) : View(context) {
     }
 
     private fun drawPenguin(cv: Canvas, cx: Float, cy: Float, r: Float) {
+        paint.style = Paint.Style.FILL
         paint.color = Color.parseColor("#FB8C00")
         cv.drawOval(cx - r * 0.55f, cy + r * 0.95f, cx - r * 0.1f, cy + r * 1.2f, paint)
         cv.drawOval(cx + r * 0.1f, cy + r * 0.95f, cx + r * 0.55f, cy + r * 1.2f, paint)
@@ -575,6 +988,7 @@ class GameView(context: Context) : View(context) {
 
     // ============ どうぶつイラスト（板の上） ============
     private fun drawAnimal(cv: Canvas, idx: Int, cx: Float, cy: Float, r: Float) {
+        paint.style = Paint.Style.FILL
         when (idx) {
             0 -> { // いぬ
                 paint.color = Color.parseColor("#6D4C41")
