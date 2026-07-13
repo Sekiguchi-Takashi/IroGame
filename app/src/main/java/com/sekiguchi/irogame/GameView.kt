@@ -1,6 +1,8 @@
 package com.sekiguchi.irogame
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -161,12 +163,13 @@ class GameView(context: Context) : View(context) {
                 return true
             }
             if (!hideFound) {
-                val p = peekPos(spotIdx)
-                if (abs(x - p[0]) < w * 0.12f && abs(y - p[1]) < w * 0.14f) {
+                val sp = hSpots[spotIdx]
+                val hr = RectF(mx(sp.l) - w * 0.04f, my(sp.tp) - w * 0.04f, mx(sp.r) + w * 0.04f, my(sp.b) + w * 0.04f)
+                if (hr.contains(x, y)) {
                     hideFound = true
                     foundT0 = now()
                     score++
-                    spawnConfetti(p[0], p[1])
+                    spawnConfetti(hr.centerX(), hr.centerY())
                     playHappy()
                     uiHandler.postDelayed({
                         hideFound = false
@@ -689,162 +692,94 @@ class GameView(context: Context) : View(context) {
         cv.drawText("もどる", cx, cy + r * 1.45f, tp)
     }
 
-    // ============ かくれんぼ画面 ============
-    private fun peekPos(i: Int): FloatArray = when (i) {
-        0 -> floatArrayOf(w * 0.16f, h * 0.43f, 0f)   // しげみ1のうえ（みみ）
-        1 -> floatArrayOf(w * 0.60f, h * 0.40f, 0f)   // しげみ2のうえ（みみ）
-        2 -> floatArrayOf(w * 0.935f, h * 0.475f, 1f) // きのよこ（て）
-        3 -> floatArrayOf(w * 0.36f, h * 0.72f, 2f)   // ベンチのした（あし）
-        else -> floatArrayOf(w * 0.705f, h * 0.575f, 0f) // すべりだいのうえ（みみ）
+    // ============ かくれんぼ画面（画像ベース） ============
+    private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private var bgPark: Bitmap? = null
+    private val stickers = arrayOfNulls<Bitmap>(3)
+    private var ms = 1f
+    private var mdx = 0f
+    private var mdy = 0f
+    private var imgK = 1f
+
+    private fun ensureBitmaps() {
+        if (bgPark == null) {
+            bgPark = BitmapFactory.decodeResource(resources, R.drawable.bg_park)
+            stickers[0] = BitmapFactory.decodeResource(resources, R.drawable.st_dog)
+            stickers[1] = BitmapFactory.decodeResource(resources, R.drawable.st_rabbit)
+            stickers[2] = BitmapFactory.decodeResource(resources, R.drawable.st_boar)
+        }
     }
+
+    private fun mx(px: Float) = px * imgK * ms + mdx
+    private fun my(py: Float) = py * imgK * ms + mdy
+
+    // かくれる場所（元画像1024x1536の座標系）
+    private class HSpot(
+        val chr: Int,                 // 0=いぬ 1=うさぎ 2=いのしし
+        val cx: Float, val cy: Float, // ステッカー中心
+        val sw: Float,                // ステッカーの幅
+        val l: Float, val tp: Float, val r: Float, val b: Float // 見えている部分
+    )
+
+    private val hSpots = arrayOf(
+        HSpot(1, 660f, 1240f, 260f, 560f, 1090f, 760f, 1180f),  // うさぎ: すなばのふちから みみ
+        HSpot(0, 590f, 955f, 260f, 508f, 830f, 660f, 1080f),    // いぬ: すべりだいのよこから かお
+        HSpot(2, 860f, 1470f, 300f, 730f, 1315f, 990f, 1405f),  // いのしし: ベンチのうしろから あたま
+        HSpot(1, 300f, 850f, 260f, 336f, 720f, 436f, 980f),     // うさぎ: タワーのよこから みみとて
+        HSpot(0, 880f, 990f, 240f, 906f, 880f, 1005f, 1090f)    // いぬ: もくばのかげから はんぶん
+    )
+
+    private val hintNames = listOf("いぬさん", "うさぎさん", "いのししさん")
 
     private fun drawHideScreen(cv: Canvas, t: Long, dt: Float) {
-        paint.style = Paint.Style.FILL
-        // そら
-        paint.color = Color.parseColor("#B3E5FC")
-        cv.drawRect(0f, 0f, w, h * 0.32f, paint)
-        paint.color = Color.parseColor("#FFF176")
-        cv.drawCircle(w * 0.12f, h * 0.07f, w * 0.05f, paint)
-        // もり（おく）
-        for (k in 0..5) {
-            val tx = w * (0.02f + 0.19f * k)
-            paint.color = Color.parseColor("#5D4037")
-            cv.drawRect(tx - w * 0.015f, h * 0.24f, tx + w * 0.015f, h * 0.33f, paint)
-            paint.color = if (k % 2 == 0) Color.parseColor("#2E7D32") else Color.parseColor("#388E3C")
-            cv.drawCircle(tx, h * 0.21f, w * 0.10f, paint)
+        ensureBitmaps()
+        val bg = bgPark
+        if (bg == null) {
+            cv.drawColor(Color.parseColor("#AED581"))
+            drawPenguinButton(cv)
+            return
         }
-        // くさはら
-        paint.color = Color.parseColor("#9CCC65")
-        cv.drawRect(0f, h * 0.31f, w, h * 0.58f, paint)
-        paint.color = Color.parseColor("#AED581")
-        cv.drawRect(0f, h * 0.56f, w, h, paint)
+        ms = max(w / bg.width, h / bg.height)
+        mdx = (w - bg.width * ms) / 2f
+        mdy = (h - bg.height * ms) / 2f
+        imgK = bg.width / 1024f
+        cv.drawBitmap(bg, null, RectF(mdx, mdy, mdx + bg.width * ms, mdy + bg.height * ms), bmpPaint)
 
-        // まえのき（みぎ）
-        paint.color = Color.parseColor("#6D4C41")
-        cv.drawRect(w * 0.835f, h * 0.30f, w * 0.895f, h * 0.56f, paint)
-        paint.color = Color.parseColor("#43A047")
-        cv.drawCircle(w * 0.865f, h * 0.255f, w * 0.135f, paint)
-
-        // しげみ1（ひだり）
-        paint.color = Color.parseColor("#66BB6A")
-        cv.drawCircle(w * 0.09f, h * 0.475f, w * 0.085f, paint)
-        cv.drawCircle(w * 0.16f, h * 0.465f, w * 0.095f, paint)
-        cv.drawCircle(w * 0.235f, h * 0.478f, w * 0.08f, paint)
-        // しげみ2（まんなか）
-        paint.color = Color.parseColor("#81C784")
-        cv.drawCircle(w * 0.545f, h * 0.44f, w * 0.075f, paint)
-        cv.drawCircle(w * 0.615f, h * 0.435f, w * 0.085f, paint)
-        cv.drawCircle(w * 0.68f, h * 0.445f, w * 0.07f, paint)
-
-        // ベンチ
-        paint.color = Color.parseColor("#8D6E63")
-        cv.drawRect(w * 0.24f, h * 0.625f, w * 0.48f, h * 0.640f, paint) // せもたれ
-        cv.drawRect(w * 0.24f, h * 0.665f, w * 0.48f, h * 0.685f, paint) // ざせき
-        cv.drawRect(w * 0.26f, h * 0.685f, w * 0.29f, h * 0.735f, paint)
-        cv.drawRect(w * 0.43f, h * 0.685f, w * 0.46f, h * 0.735f, paint)
-
-        // すべりだい
-        paint.color = Color.parseColor("#90A4AE")
-        cv.drawRect(w * 0.665f, h * 0.585f, w * 0.745f, h * 0.605f, paint) // ステージ
-        cv.drawRect(w * 0.675f, h * 0.605f, w * 0.695f, h * 0.76f, paint) // はしご
-        cv.drawRect(w * 0.72f, h * 0.605f, w * 0.735f, h * 0.76f, paint)
-        paint.color = Color.parseColor("#EF5350")
-        val slide = Path()
-        slide.moveTo(w * 0.745f, h * 0.59f)
-        slide.lineTo(w * 0.90f, h * 0.76f)
-        slide.lineTo(w * 0.855f, h * 0.775f)
-        slide.lineTo(w * 0.735f, h * 0.615f)
-        slide.close()
-        cv.drawPath(slide, paint)
-
-        drawScore(cv)
-
-        // うさぎ（かくれている or みつかった）
-        val p = peekPos(spotIdx)
+        val sp = hSpots[spotIdx]
+        val bmp = stickers[sp.chr]
         if (!hideFound) {
-            drawPeek(cv, p[0], p[1], p[2].toInt(), t)
+            if (bmp != null) {
+                val wig = sin(t / 300f) * w * 0.004f
+                cv.save()
+                cv.clipRect(mx(sp.l), my(sp.tp), mx(sp.r), my(sp.b))
+                val half = sp.sw * imgK * ms / 2f
+                val dcx = mx(sp.cx)
+                val dcy = my(sp.cy) + wig
+                cv.drawBitmap(bmp, null, RectF(dcx - half, dcy - half, dcx + half, dcy + half), bmpPaint)
+                cv.restore()
+            }
+            val hint = hintNames[sp.chr] + "は どこかな？"
+            tp.textSize = w * 0.052f
+            tp.style = Paint.Style.STROKE
+            tp.strokeWidth = w * 0.014f
+            tp.color = Color.WHITE
+            cv.drawText(hint, w / 2, h * 0.095f, tp)
+            tp.style = Paint.Style.FILL
+            tp.color = Color.parseColor("#33691E")
+            cv.drawText(hint, w / 2, h * 0.095f, tp)
         } else {
-            val jump = -abs(sin((t - foundT0) / 170f)) * w * 0.06f
-            drawRabbitFull(cv, p[0], p[1] - w * 0.05f + jump, w * 0.07f)
-        }
-
-        tp.textSize = w * 0.05f
-        tp.color = Color.parseColor("#33691E")
-        if (!hideFound) cv.drawText("うさぎさんは どこかな？", w / 2, h * 0.10f, tp)
-
-        drawPenguinButton(cv)
-
-        if (hideFound) {
+            if (bmp != null) {
+                val jump = -abs(sin((t - foundT0) / 170f)) * w * 0.05f
+                val half = sp.sw * imgK * ms * 0.62f
+                val dcx = mx(sp.cx)
+                val dcy = (my(sp.cy) + jump).coerceIn(half, h - half)
+                cv.drawBitmap(bmp, null, RectF(dcx - half, dcy - half, dcx + half, dcy + half), bmpPaint)
+            }
             drawCelebrate(cv, t, dt, "みつけた！", "やったー！", w / 2, h * 0.40f)
         }
-    }
 
-    private fun drawPeek(cv: Canvas, x: Float, y: Float, kind: Int, t: Long) {
-        val wig = sin(t / 320f) * 3f
-        cv.save()
-        cv.rotate(wig, x, y)
-        paint.style = Paint.Style.FILL
-        when (kind) {
-            0 -> { // みみだけ
-                paint.color = Color.WHITE
-                cv.drawOval(x - w * 0.075f, y - w * 0.19f, x - w * 0.015f, y + w * 0.015f, paint)
-                cv.drawOval(x + w * 0.015f, y - w * 0.19f, x + w * 0.075f, y + w * 0.015f, paint)
-                paint.color = Color.parseColor("#F8BBD0")
-                cv.drawOval(x - w * 0.06f, y - w * 0.16f, x - w * 0.03f, y - w * 0.02f, paint)
-                cv.drawOval(x + w * 0.03f, y - w * 0.16f, x + w * 0.06f, y - w * 0.02f, paint)
-            }
-            1 -> { // てだけ
-                paint.color = Color.WHITE
-                cv.drawCircle(x, y, w * 0.035f, paint)
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = w * 0.006f
-                paint.color = Color.parseColor("#B0BEC5")
-                cv.drawCircle(x, y, w * 0.035f, paint)
-                cv.drawLine(x - w * 0.01f, y - w * 0.03f, x - w * 0.01f, y - w * 0.012f, paint)
-                cv.drawLine(x + w * 0.01f, y - w * 0.03f, x + w * 0.01f, y - w * 0.012f, paint)
-                paint.style = Paint.Style.FILL
-            }
-            2 -> { // あしだけ
-                paint.color = Color.WHITE
-                cv.drawOval(x - w * 0.085f, y - w * 0.02f, x - w * 0.005f, y + w * 0.025f, paint)
-                cv.drawOval(x + w * 0.005f, y - w * 0.02f, x + w * 0.085f, y + w * 0.025f, paint)
-                paint.color = Color.parseColor("#F8BBD0")
-                cv.drawCircle(x - w * 0.06f, y, w * 0.012f, paint)
-                cv.drawCircle(x + w * 0.03f, y, w * 0.012f, paint)
-            }
-        }
-        cv.restore()
-    }
-
-    private fun drawRabbitFull(cv: Canvas, cx: Float, cy: Float, r: Float) {
-        paint.style = Paint.Style.FILL
-        // みみ
-        paint.color = Color.WHITE
-        cv.drawOval(cx - r * 0.6f, cy - r * 1.9f, cx - r * 0.1f, cy - r * 0.4f, paint)
-        cv.drawOval(cx + r * 0.1f, cy - r * 1.9f, cx + r * 0.6f, cy - r * 0.4f, paint)
-        paint.color = Color.parseColor("#F8BBD0")
-        cv.drawOval(cx - r * 0.48f, cy - r * 1.7f, cx - r * 0.22f, cy - r * 0.6f, paint)
-        cv.drawOval(cx + r * 0.22f, cy - r * 1.7f, cx + r * 0.48f, cy - r * 0.6f, paint)
-        // からだ
-        paint.color = Color.WHITE
-        cv.drawOval(cx - r * 0.8f, cy + r * 0.4f, cx + r * 0.8f, cy + r * 2.0f, paint)
-        // あたま
-        cv.drawCircle(cx, cy, r, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = r * 0.05f
-        paint.color = Color.parseColor("#B0BEC5")
-        cv.drawCircle(cx, cy, r, paint)
-        cv.drawOval(cx - r * 0.8f, cy + r * 0.4f, cx + r * 0.8f, cy + r * 2.0f, paint)
-        paint.style = Paint.Style.FILL
-        // め・はな・ほっぺ
-        paint.color = Color.BLACK
-        cv.drawCircle(cx - r * 0.35f, cy - r * 0.1f, r * 0.1f, paint)
-        cv.drawCircle(cx + r * 0.35f, cy - r * 0.1f, r * 0.1f, paint)
-        paint.color = Color.parseColor("#F06292")
-        cv.drawCircle(cx, cy + r * 0.2f, r * 0.11f, paint)
-        paint.color = Color.parseColor("#F8BBD0")
-        cv.drawCircle(cx - r * 0.6f, cy + r * 0.25f, r * 0.14f, paint)
-        cv.drawCircle(cx + r * 0.6f, cy + r * 0.25f, r * 0.14f, paint)
+        drawScore(cv)
+        drawPenguinButton(cv)
     }
 
     private fun drawCelebrate(cv: Canvas, t: Long, dt: Float, mainText: String, subText: String, cx: Float, cy: Float) {
