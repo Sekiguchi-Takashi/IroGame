@@ -78,6 +78,7 @@ class GameView(context: Context) : View(context) {
 
     // ---- かくれんぼ ----
     private var spotIdx = 0
+    private var hideChr = 0
     private var hideFound = false
     private var foundT0 = 0L
 
@@ -163,21 +164,22 @@ class GameView(context: Context) : View(context) {
                 return true
             }
             if (!hideFound) {
-                val sp = hSpots[spotIdx]
-                val hr = RectF(mx(sp.l) - w * 0.04f, my(sp.tp) - w * 0.04f, mx(sp.r) + w * 0.04f, my(sp.b) + w * 0.04f)
-                if (hr.contains(x, y)) {
+                val px = mx(hideSpots[spotIdx][0])
+                val py = my(hideSpots[spotIdx][1])
+                if (abs(x - px) < w * 0.14f && abs(y - py) < w * 0.16f) {
                     hideFound = true
                     foundT0 = now()
                     score++
-                    spawnConfetti(hr.centerX(), hr.centerY())
+                    spawnConfetti(px, py)
                     playHappy()
                     uiHandler.postDelayed({
                         hideFound = false
-                        var ns = Random.nextInt(5)
-                        while (ns == spotIdx) ns = Random.nextInt(5)
+                        var ns = Random.nextInt(hideSpots.size)
+                        while (ns == spotIdx) ns = Random.nextInt(hideSpots.size)
                         spotIdx = ns
+                        hideChr = Random.nextInt(3)
                         parts.clear()
-                    }, 2800)
+                    }, 3200)
                 }
             }
             return true
@@ -189,6 +191,7 @@ class GameView(context: Context) : View(context) {
             screen = Screen.HIDE
             hideFound = false
             spotIdx = Random.nextInt(5)
+            hideChr = Random.nextInt(3)
             parts.clear()
             tg()?.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
             return true
@@ -714,22 +717,16 @@ class GameView(context: Context) : View(context) {
     private fun my(py: Float) = py * imgK * ms + mdy
 
     // かくれる場所（元画像1024x1536の座標系）
-    private class HSpot(
-        val chr: Int,                 // 0=いぬ 1=うさぎ 2=いのしし
-        val cx: Float, val cy: Float, // ステッカー中心
-        val sw: Float,                // ステッカーの幅
-        val l: Float, val tp: Float, val r: Float, val b: Float // 見えている部分
-    )
-
-    private val hSpots = arrayOf(
-        HSpot(1, 660f, 1240f, 260f, 560f, 1090f, 760f, 1180f),  // うさぎ: すなばのふちから みみ
-        HSpot(0, 590f, 955f, 260f, 508f, 830f, 660f, 1080f),    // いぬ: すべりだいのよこから かお
-        HSpot(2, 860f, 1470f, 300f, 730f, 1315f, 990f, 1405f),  // いのしし: ベンチのうしろから あたま
-        HSpot(1, 300f, 850f, 260f, 336f, 720f, 436f, 980f),     // うさぎ: タワーのよこから みみとて
-        HSpot(0, 880f, 990f, 240f, 906f, 880f, 1005f, 1090f)    // いぬ: もくばのかげから はんぶん
+    private val hideSpots = arrayOf(
+        floatArrayOf(310f, 690f),   // すべりだいのうえ
+        floatArrayOf(660f, 1145f),  // すなばのうえ
+        floatArrayOf(600f, 585f),   // ブランコのうえ
+        floatArrayOf(820f, 895f),   // もくばのうえ
+        floatArrayOf(860f, 1475f)   // ベンチのした
     )
 
     private val hintNames = listOf("いぬさん", "うさぎさん", "いのししさん")
+    private val partNames = listOf("しっぽ", "みみ", "はな")
 
     private fun drawHideScreen(cv: Canvas, t: Long, dt: Float) {
         ensureBitmaps()
@@ -745,21 +742,12 @@ class GameView(context: Context) : View(context) {
         imgK = bg.width / 1024f
         cv.drawBitmap(bg, null, RectF(mdx, mdy, mdx + bg.width * ms, mdy + bg.height * ms), bmpPaint)
 
-        val sp = hSpots[spotIdx]
-        val bmp = stickers[sp.chr]
+        val px = mx(hideSpots[spotIdx][0])
+        val py = my(hideSpots[spotIdx][1])
         if (!hideFound) {
-            if (bmp != null) {
-                val wig = sin(t / 300f) * w * 0.004f
-                cv.save()
-                cv.clipRect(mx(sp.l), my(sp.tp), mx(sp.r), my(sp.b))
-                val half = sp.sw * imgK * ms / 2f
-                val dcx = mx(sp.cx)
-                val dcy = my(sp.cy) + wig
-                cv.drawBitmap(bmp, null, RectF(dcx - half, dcy - half, dcx + half, dcy + half), bmpPaint)
-                cv.restore()
-            }
-            val hint = hintNames[sp.chr] + "は どこかな？"
-            tp.textSize = w * 0.052f
+            drawPeekPart(cv, hideChr, px, py, t)
+            val hint = "だれかの " + partNames[hideChr] + "が みえるよ！"
+            tp.textSize = w * 0.05f
             tp.style = Paint.Style.STROKE
             tp.strokeWidth = w * 0.014f
             tp.color = Color.WHITE
@@ -768,21 +756,102 @@ class GameView(context: Context) : View(context) {
             tp.color = Color.parseColor("#33691E")
             cv.drawText(hint, w / 2, h * 0.095f, tp)
         } else {
-            if (bmp != null) {
-                val jump = -abs(sin((t - foundT0) / 170f)) * w * 0.05f
-                val half = sp.sw * imgK * ms * 0.62f
-                val dcx = mx(sp.cx)
-                val dcy = (my(sp.cy) + jump).coerceIn(half, h - half)
-                cv.drawBitmap(bmp, null, RectF(dcx - half, dcy - half, dcx + half, dcy + half), bmpPaint)
-            }
-            drawCelebrate(cv, t, dt, "みつけた！", "やったー！", w / 2, h * 0.40f)
+            drawCelebrate(cv, t, dt, "みつけた！", "やったー！", w / 2, h * 0.40f, h * 0.85f)
+            drawPhotoCard(cv, t)
         }
 
         drawScore(cv)
         drawPenguinButton(cv)
     }
 
-    private fun drawCelebrate(cv: Canvas, t: Long, dt: Float, mainText: String, subText: String, cx: Float, cy: Float) {
+    // 見えている体のパーツ
+    private fun drawPeekPart(cv: Canvas, chr: Int, x: Float, y: Float, t: Long) {
+        val wig = sin(t / 280f) * 4f
+        cv.save()
+        cv.rotate(wig, x, y)
+        val s = w * 0.055f
+        when (chr) {
+            0 -> drawShibaTail(cv, x, y, s)
+            1 -> drawRabbitEars(cv, x, y, s)
+            else -> drawBoarNose(cv, x, y, s)
+        }
+        cv.restore()
+        paint.style = Paint.Style.FILL
+    }
+
+    private fun drawShibaTail(cv: Canvas, x: Float, y: Float, s: Float) {
+        // くるんと巻いた柴犬のしっぽ
+        val rect = RectF(x - s, y - s * 1.7f, x + s, y + s * 0.3f)
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = Color.parseColor("#4A3426")
+        paint.strokeWidth = s * 0.95f
+        cv.drawArc(rect, 150f, 260f, false, paint)
+        paint.color = Color.parseColor("#E8913A")
+        paint.strokeWidth = s * 0.72f
+        cv.drawArc(rect, 150f, 260f, false, paint)
+        paint.color = Color.parseColor("#F8E7CE")
+        paint.strokeWidth = s * 0.3f
+        cv.drawArc(rect, 165f, 235f, false, paint)
+        paint.style = Paint.Style.FILL
+    }
+
+    private fun drawRabbitEars(cv: Canvas, x: Float, y: Float, s: Float) {
+        for (side in intArrayOf(-1, 1)) {
+            cv.save()
+            cv.rotate(13f * side, x, y)
+            val l = x + side * s * 0.55f
+            paint.color = Color.parseColor("#4A3426")
+            cv.drawOval(l - s * 0.44f, y - s * 2.65f, l + s * 0.44f, y + s * 0.2f, paint)
+            paint.color = Color.parseColor("#C89B6B")
+            cv.drawOval(l - s * 0.35f, y - s * 2.52f, l + s * 0.35f, y + s * 0.08f, paint)
+            paint.color = Color.parseColor("#EBD6B4")
+            cv.drawOval(l - s * 0.17f, y - s * 2.2f, l + s * 0.17f, y - s * 0.2f, paint)
+            cv.restore()
+        }
+    }
+
+    private fun drawBoarNose(cv: Canvas, x: Float, y: Float, s: Float) {
+        paint.color = Color.parseColor("#4A3426")
+        cv.drawOval(x - s * 1.15f, y - s * 0.85f, x + s * 1.15f, y + s * 0.85f, paint)
+        paint.color = Color.parseColor("#9C7250")
+        cv.drawOval(x - s * 1.0f, y - s * 0.72f, x + s * 1.0f, y + s * 0.72f, paint)
+        paint.color = Color.parseColor("#5D4037")
+        cv.drawOval(x - s * 0.5f, y - s * 0.35f, x - s * 0.15f, y + s * 0.35f, paint)
+        cv.drawOval(x + s * 0.15f, y - s * 0.35f, x + s * 0.5f, y + s * 0.35f, paint)
+        paint.color = Color.parseColor("#B98A63")
+        cv.drawOval(x - s * 0.85f, y - s * 0.52f, x - s * 0.45f, y - s * 0.22f, paint)
+    }
+
+    // みつけたら写真がでる
+    private fun drawPhotoCard(cv: Canvas, t: Long) {
+        val bmp = stickers[hideChr] ?: return
+        val ap = ((t - foundT0) / 420f).coerceIn(0f, 1f)
+        val sc = easeOutBack(ap)
+        val cw = w * 0.60f
+        val ch = cw * 1.18f
+        val cx = w / 2
+        val cy = h * 0.40f
+        cv.save()
+        cv.scale(sc, sc, cx, cy)
+        cv.rotate(sin(t / 600f) * 2f, cx, cy)
+        val r = RectF(cx - cw / 2, cy - ch / 2, cx + cw / 2, cy + ch / 2)
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#55000000")
+        r.offset(w * 0.012f, w * 0.012f)
+        cv.drawRoundRect(r, w * 0.03f, w * 0.03f, paint)
+        r.offset(-w * 0.012f, -w * 0.012f)
+        paint.color = Color.WHITE
+        cv.drawRoundRect(r, w * 0.03f, w * 0.03f, paint)
+        val m = cw * 0.06f
+        cv.drawBitmap(bmp, null, RectF(r.left + m, r.top + m, r.right - m, r.top + m + (cw - 2 * m)), bmpPaint)
+        tp.textSize = cw * 0.105f
+        tp.color = Color.parseColor("#4E342E")
+        cv.drawText(hintNames[hideChr] + " はっけん！", cx, r.bottom - ch * 0.05f, tp)
+        cv.restore()
+    }
+
+    private fun drawCelebrate(cv: Canvas, t: Long, dt: Float, mainText: String, subText: String, cx: Float, cy: Float, textCy: Float = cy) {
         val el = t - celebFoundTime()
 
         cv.save()
@@ -823,18 +892,18 @@ class GameView(context: Context) : View(context) {
         val ap = (el / 400f).coerceIn(0f, 1f)
         val scale = easeOutBack(ap) * (1f + 0.06f * sin(el / 120f))
         cv.save()
-        cv.scale(scale, scale, cx, cy)
+        cv.scale(scale, scale, cx, textCy)
         tp.textSize = w * 0.17f
         tp.style = Paint.Style.STROKE
         tp.strokeWidth = w * 0.02f
         tp.color = Color.WHITE
-        cv.drawText(mainText, cx, cy, tp)
+        cv.drawText(mainText, cx, textCy, tp)
         tp.style = Paint.Style.FILL
         tp.color = Color.HSVToColor(floatArrayOf((el / 8f) % 360f, 0.85f, 0.95f))
-        cv.drawText(mainText, cx, cy, tp)
+        cv.drawText(mainText, cx, textCy, tp)
         tp.textSize = w * 0.07f
         tp.color = Color.parseColor("#FF7043")
-        cv.drawText(subText, cx, cy + w * 0.13f, tp)
+        cv.drawText(subText, cx, textCy + w * 0.13f, tp)
         cv.restore()
     }
 
