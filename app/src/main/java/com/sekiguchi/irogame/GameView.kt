@@ -718,11 +718,11 @@ class GameView(context: Context) : View(context) {
 
     // かくれる場所（元画像1024x1536の座標系）
     private val hideSpots = arrayOf(
-        floatArrayOf(310f, 690f),   // すべりだいのうえ
-        floatArrayOf(660f, 1145f),  // すなばのうえ
-        floatArrayOf(600f, 585f),   // ブランコのうえ
-        floatArrayOf(820f, 895f),   // もくばのうえ
-        floatArrayOf(860f, 1475f)   // ベンチのした
+        floatArrayOf(300f, 715f),   // すべりだいのうえ
+        floatArrayOf(615f, 1140f),  // すなばのうえ
+        floatArrayOf(598f, 583f),   // ブランコのうえ
+        floatArrayOf(840f, 995f),   // もくばのうえ
+        floatArrayOf(800f, 1490f)   // ベンチのした
     )
 
     private val hintNames = listOf("いぬさん", "うさぎさん", "いのししさん")
