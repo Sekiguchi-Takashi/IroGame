@@ -463,6 +463,8 @@ class GameView(context: Context) : View(context) {
         }
         if (phase == Phase.IDLE || phase == Phase.QUESTION) drawRabbitButton(cv, t)
         if (phase == Phase.CELEBRATE) drawCelebrate(cv, t, dt, "せいかい！", "すごーい！", w / 2, h * 0.44f, h * 0.44f)
+
+        postInvalidateOnAnimation()
     }
 
     private fun updatePositions(t: Long) {
